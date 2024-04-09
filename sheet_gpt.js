@@ -1,4 +1,25 @@
+const WIDTH = 300;
 
+function createOnOpenTrigger(){
+	// This function needs to be called every time the project ID of the apps script is changed.
+	// The old trigger belongs to the old project and is not deleted automatically.
+	if(
+		ScriptApp
+			.getProjectTriggers()
+			.map( trigger => trigger.getHandlerFunction() )
+			.includes( 'onOpenFunction' )
+	 ){
+		console.log( 'The onOpen trigger already exists.' );
+	}else{
+		ScriptApp
+			.newTrigger( 'onOpenFunction' )
+			.forSpreadsheet( SpreadsheetApp.getActive() )
+			.onOpen()
+			.create()
+		;
+		console.log( 'The onOpen trigger has been created.' );
+	}
+}
 
 // https://platform.openai.com/docs/api-reference/chat/create
 class GPT{
@@ -182,19 +203,14 @@ const INSTRUCTIONS_JSON = `
 	UNIQUE_ID: This attribute is used to match the input and output items. Pls don't change it.
 `;
 
-function testIt(){
-	const sheetName = 'test';
-	const result = chatGptServerside({
-		sheetName,
-	 });
-	 console.log( result );
+
+function saveOpenAiKey( open_ai_key ){
+	PropertiesService.getScriptProperties().setProperty( 'OPENAI_KEY', open_ai_key );
 }
 
-
-
-
-
-
+function handleClientCall({ functionName, parameters }){
+	return this[ functionName ]( parameters );
+}
 
 
 
@@ -341,6 +357,20 @@ function chatGptServerside({
 }
 
 function showSidebarChatGPT(){
+	function printStatus({ text, price, messagesToKeep = 3 }){
+		if( price ){
+			document.getElementById( 'price' ).innerText = price.toFixed( 2 );
+		}
+		const statusDiv = document.getElementById( 'status' );
+		const statusSoFar = statusDiv.innerHTML
+			.split( '<br>' )
+			.slice( -messagesToKeep )   // keep only the last messagesToKeep messages if messagesToKeep > 0
+			.slice( 0, messagesToKeep ) // this is needed because slice( -messagesToKeep ) returns the whole array if messagesToKeep is 0
+		;
+		// current time in format HH:MM:SS
+		const time = new Date().toTimeString().split( ' ' )[ 0 ];
+		statusDiv.innerHTML = [].concat( statusSoFar, time + ': ' + text ).join( '<br>' );
+	}
 	function handleButtonClick(){ // client side
 		const button = document.getElementById( 'main_button' );
 		if( [ 'Stop', 'Stopping...' ].includes( button.innerText ) ){
@@ -348,27 +378,13 @@ function showSidebarChatGPT(){
 			return;
 		}
 		button.innerText = 'Stop';
-		function printStatus({ text, price, messagesToKeep = 3 }){
-			if( price ){
-				document.getElementById( 'price' ).innerText = price.toFixed( 2 );
-			}
-			const statusDiv = document.getElementById( 'status' );
-			const statusSoFar = statusDiv.innerHTML
-				.split( '<br>' )
-				.slice( -messagesToKeep )   // keep only the last messagesToKeep messages if messagesToKeep > 0
-				.slice( 0, messagesToKeep ) // this is needed because slice( -messagesToKeep ) returns the whole array if messagesToKeep is 0
-			;
-			// current time in format HH:MM:SS
-			const time = new Date().toTimeString().split( ' ' )[ 0 ];
-			statusDiv.innerHTML = [].concat( statusSoFar, time + ': ' + text ).join( '<br>' );
-		}
 		function serverSideCall({ sheetName, price }={}){
 			if( !sheetName ){
 				printStatus({ text : 'Submitting...' } );
 			}
 			const modelName          =  document.getElementById( 'gpt_model_name'      ).value;
 			const temperature        = +document.getElementById( 'temperature'         ).value;
-			const allowAlterInputs   =  document.getElementById( 'allow_alter_inputs'  ).checked;
+			//const allowAlterInputs   =  document.getElementById( 'allow_alter_inputs'  ).checked;
 			const commonInstructions =  document.getElementById( 'common_instructions' ).value;
 			const numRows            = +document.getElementById( 'count_rows'          ).value;
 			google.script.run
@@ -400,7 +416,7 @@ function showSidebarChatGPT(){
 						modelName,
 						temperature,
 						price,
-						allowAlterInputs,
+						//allowAlterInputs,
 						numRows,
 						commonInstructions,
 					},
@@ -408,6 +424,21 @@ function showSidebarChatGPT(){
 			;
 		}
 		serverSideCall();
+	}
+	function saveKey(){
+		console.log( 'saveKey' );
+		//PropertiesService.getScriptProperties().setProperty( 'OPENAI_KEY', key );
+		google.script.run
+			.withSuccessHandler( () => alert( 'Key saved' ) )
+			.withFailureHandler( error => {
+				console.error( error );
+				printStatus({ text : 'An error occurred in handleButtonClick: ' + error.message });
+				alert( 'An error occurred: ' + error.message );
+			})
+			.handleClientCall({
+				functionName : 'saveOpenAiKey',
+				parameters   : document.getElementById( 'open_ai_key' ).value,
+			})
 	}
 	const html = `<!DOCTYPE html>
 	<html>
@@ -425,10 +456,17 @@ function showSidebarChatGPT(){
 				label { display: block; font-weight: bold; }
 			</style>
 			<script>
-				${handleButtonClick}
+			${printStatus}
+			${handleButtonClick}
+			${saveKey}
 			</script>
 		</head>
 		<body>
+		<label>OpenAi Key<br>
+			<input id="open_ai_key" type="password"
+				 value="${PropertiesService.getScriptProperties().getProperty( 'OPENAI_KEY' )}" placeholder="OpenAI Key">
+			<button onclick="saveKey()">Save Key</button>
+		</label>
 		<label>Model<br>
 			<select id="gpt_model_name">
 				${Object.entries( GPT.MODELS ).map( ([ key, { isDefault, price_per_1k_input_tokens, price_per_1k_output_tokens }]) =>
@@ -445,10 +483,12 @@ function showSidebarChatGPT(){
 			-->
 			<input id="temperature" type="range" min="0" max="1" step="0.1" value="0.1">
 		</label>
+		<!--
 		<label> Allow the model to alter the pre-filled values of the input rows? <br>
 			<input id="allow_alter_inputs" type="checkbox" checked>
 		</label>
-		<label># Rows per Request<br>
+		-->
+		<label>Batch Size<br>
 			<input id="count_rows" type="range" min="1" max="20" step="1" value="5" list="markers">
 			<datalist id="markers">
 				<option value="1"></option>
@@ -458,7 +498,7 @@ function showSidebarChatGPT(){
 			</datalist>
 		</label>
 		<textarea id="common_instructions" class="text_field" rows="15" cols="50" placeholder="Common instructions for all rows"></textarea>
-		<button id="main_button" onclick="handleButtonClick()">Start</button>
+		<button id="main_button" onclick="handleButtonClick()">Start Autofill</button>
 		<br>
 		<br>
 		Price: <span id="price">0.00</span> USD
@@ -474,46 +514,6 @@ function showSidebarChatGPT(){
 
 
 
-function initKeys(){
-	Object.entries({
-		OPENAI_KEY : 'insert_here',
-	})
-	.filter( ([ key, value ]) => value !== 'insert_here' )
-	.forEach( ([ key, value ]) =>
-		PropertiesService.getScriptProperties().setProperty( key, value )
-	);
-	Object.entries( PropertiesService.getScriptProperties().getProperties() )
-		.forEach( ([ key, value ]) => console.log( key + ' ' + value ) )
-	;
-}
-
-
-/**
- * 
-
-*/
-const WIDTH = 300;
-
-function createOnOpenTrigger(){
-	// This function needs to be called every time the project ID of the apps script is changed.
-	// The old trigger belongs to the old project and is not deleted automatically.
-	if(
-		ScriptApp
-			.getProjectTriggers()
-			.map( trigger => trigger.getHandlerFunction() )
-			.includes( 'onOpenFunction' )
-	 ){
-		console.log( 'The onOpen trigger already exists.' );
-	}else{
-		ScriptApp
-			.newTrigger( 'onOpenFunction' )
-			.forSpreadsheet( SpreadsheetApp.getActive() )
-			.onOpen()
-			.create()
-		;
-		console.log( 'The onOpen trigger has been created.' );
-	}
-}
 
 function onOpenFunction(){
 	const menu = SpreadsheetApp
@@ -542,19 +542,6 @@ function showSidebar({ title, html }){
 	);
 }
 
-function handleClientCall({ functionName, parameters }){
-	return this[ functionName ]( parameters );
-}
-
-// ------------------------------------------------------------------
-
-function testSheet(){
-	const table = SheetsTable.sheet({ sheetName : 'test', headers : [ 'a', 'b' ] });
-	table
-		.writeHeaders()
-		.write({ items : [ { a : 1, b : 2 } ], rowIndex : 1 })
-	;
-}
 class SheetsAppRaw{
 	constructor({ documentId, documentUrl, sheetName, sheetId }={}){
 		this.document =
@@ -662,7 +649,6 @@ class SheetsAppRaw{
 		return this.sheet.getSheetId();
 	}
 }
-
 class SheetsTable extends SheetsAppRaw{
 	constructor({ documentId, documentUrl, sheetName, sheetId, headers, headerRow = 1, startRow = 2, startColumn = 1 }){
 		super({ documentId, documentUrl, sheetName, sheetId });
@@ -690,7 +676,7 @@ class SheetsTable extends SheetsAppRaw{
 		const itemHeaders = items
 			.flatMap( Object.keys )
 			.filter( onlyUnique() )
-			.filter( isIncludedIn( this.headers ) )
+			.filter( x => this.headers.includes( x ) )
 		;
 		if( !items.every( item => itemHeaders.every( header => header in item ) ) ){
 			throw new Error( 'All items must have the same subset of properties for this table' );
@@ -768,14 +754,3 @@ function onlyUnique( ...mapperList ){
 	};
 }
 
-function isIncludedIn( arr ){
-	if( ! Array.isArray( arr ) ){
-		arr = [].slice.call( arguments );
-	}
-	return item => arr.includes( item );
-}
-
-function isNotIncludedIn( arr ){
-	const func = isIncludedIn.apply( null, arguments );
-	return item => !func( item );
-}
